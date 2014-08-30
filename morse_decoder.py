@@ -156,17 +156,19 @@ def block_find_ditdah_threshold(samples):
     max1, max2 = sorted(zip(estimate[maxima], domain[maxima]))[::-1][0:2]
     smode1, smode2 = sorted((max1[1], max2[1]))
 
-    threshold = ((smode2 - smode1)/2.0) + smode1
+    threshold1 = ((smode2 - smode1)/3.0) + smode1
+    threshold2 = (2.0*(smode2 - smode1)/3.0) + smode1
 
     print "    min %.2f  max %.2f  mean %.2f  stdev %.2f" % (smin, smax, smean, stdev)
-    print "    mode1 %.2f  mode2 %.2f  threshold %.2f" % (smode1, smode2, threshold)
+    print "    mode1 %.2f  mode2 %.2f  threshold1 %.2f  threshold2 %.2f" % (smode1, smode2, threshold1, threshold2)
 
-    MORSE_DAH_MIN_LENGTH = threshold
-    MORSE_DIT_MAX_LENGTH = threshold
+    MORSE_DIT_MAX_LENGTH = threshold1
+    MORSE_DAH_MIN_LENGTH = threshold2
 
     #plt.plot(domain, kernel(domain))
     #plt.hist(widths, bins=50)
-    #plt.axvline(threshold, color='r', linestyle='dashed')
+    #plt.axvline(threshold1, color='r', linestyle='dashed')
+    #plt.axvline(threshold2, color='r', linestyle='dashed')
     #plt.show()
 
     return samples
