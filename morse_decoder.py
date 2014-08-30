@@ -39,10 +39,12 @@ def timed(message):
 SAMPLE_RATE = None
 THRESHOLD = None
 MORSE_FREQUENCY = None
-MORSE_DAH_MIN_LENGTH = None
 MORSE_DIT_MAX_LENGTH = None
+MORSE_DAH_MIN_LENGTH = None
 
-MORSE_GROUP_SEPARATION = 100e-3
+MORSE_LETTER_SEPARATION = 100e-3
+MORSE_WORD_SEPARATION = 0.80
+MORSE_SENTENCE_SEPARATION = 1.50
 
 ######################################################################
 
@@ -185,7 +187,7 @@ def block_group_pulse_widths(samples):
             last_offset = offset + width
 
         # If this pulse width is still part of the same group
-        if abs(offset - last_offset) < MORSE_GROUP_SEPARATION:
+        if abs(offset - last_offset) < MORSE_LETTER_SEPARATION:
             pulses.append(width)
             last_offset = offset + width
 
@@ -242,9 +244,9 @@ def block_ascii_to_conversation(samples):
     last_offset = None
 
     for (offset, letter) in samples:
-        if last_offset == None or (offset - last_offset) > 1.50:
+        if last_offset == None or (offset - last_offset) > MORSE_SENTENCE_SEPARATION:
             sys.stdout.write("\n%.2f:\t" % offset)
-        elif (offset - last_offset) > 0.80:
+        elif (offset - last_offset) > MORSE_WORD_SEPARATION:
             sys.stdout.write(" ")
 
         sys.stdout.write(letter)
