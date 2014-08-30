@@ -48,6 +48,7 @@ def timed(message):
 ################################################################################
 
 SAMPLE_RATE = None
+THRESHOLD = None
 
 ################################################################################
 
@@ -80,12 +81,35 @@ def block_lowpass_filter_iir(samples, fC):
     #plot_filter(b, a, SAMPLE_RATE, range(1000))
     return scipy.signal.lfilter(b, a, samples)
 
+@timed("Finding threshold...")
+def block_find_threshold(samples):
+    global THRESHOLD
+
+    counts, bins = numpy.histogram(samples, bins=100)
+    smode = bins[numpy.argmax(counts)]
+
+    smin = numpy.min(samples)
+    smax = numpy.max(samples)
+    smean = numpy.mean(samples)
+    stdev = numpy.std(samples)
+
+    THRESHOLD = smode + stdev
+
+    print "    min %.2f  max %.2f  mean %.2f  stdev %.2f" % (smin, smax, smean, stdev)
+    print "    approx. mode %.2f  threshold %.2f" % (smode, THRESHOLD)
+
+    #plt.hist(samples, bins=100)
+    #plt.axvline(THRESHOLD, color='r', linestyle='dashed')
+    #plt.show()
+
+    return samples
+
 @timed("Thresholding...")
-def block_threshold(samples, threshold):
+def block_threshold(samples):
     samples = numpy.copy(samples)
 
-    idx_above = samples > threshold
-    idx_below = samples < threshold
+    idx_above = samples > THRESHOLD
+    idx_below = samples < THRESHOLD
     samples[idx_above] = 1
     samples[idx_below] = 0
 
@@ -226,7 +250,8 @@ elif len(sys.argv) >= 4:
 samples = block_bandpass_filter_iir(samples, 95.0, 105.0)
 samples = block_rectify(samples)
 samples = block_lowpass_filter_iir(samples, 5.0)
-samples = block_threshold(samples, 1000.0)
+samples = block_find_threshold(samples)
+samples = block_threshold(samples)
 samples = block_pulse_widths(samples)
 samples = block_filter_pulse_widths(samples)
 samples = block_pulse_widths_to_symbols(samples)

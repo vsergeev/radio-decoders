@@ -37,10 +37,10 @@ def timed(message):
 ######################################################################
 
 SAMPLE_RATE = None
+THRESHOLD = None
 MORSE_FREQUENCY = None
-MORSE_THRESHOLD = 5000.0
-MORSE_DAH_MIN_LENGTH = 100e-3
-MORSE_DIT_MAX_LENGTH = 90e-3
+MORSE_DAH_MIN_LENGTH = None
+MORSE_DIT_MAX_LENGTH = None
 
 MORSE_GROUP_SEPARATION = 100e-3
 
@@ -88,12 +88,35 @@ def block_lowpass_filter_iir(samples, fC):
     #plot_filter(b, a, SAMPLE_RATE, range(1000))
     return scipy.signal.lfilter(b, a, samples)
 
+@timed("Finding threshold...")
+def block_find_threshold(samples):
+    global THRESHOLD
+
+    counts, bins = numpy.histogram(samples, bins=100)
+    smode = bins[numpy.argmax(counts)]
+
+    smin = numpy.min(samples)
+    smax = numpy.max(samples)
+    smean = numpy.mean(samples)
+    stdev = numpy.std(samples)
+
+    THRESHOLD = smode + stdev
+
+    print "    min %.2f  max %.2f  mean %.2f  stdev %.2f" % (smin, smax, smean, stdev)
+    print "    approx. mode %.2f  threshold %.2f" % (smode, THRESHOLD)
+
+    #plt.hist(samples, bins=100)
+    #plt.axvline(THRESHOLD, color='r', linestyle='dashed')
+    #plt.show()
+
+    return samples
+
 @timed("Thresholding...")
-def block_threshold(samples, threshold):
+def block_threshold(samples):
     samples = numpy.copy(samples)
 
-    idx_above = samples > threshold
-    idx_below = samples < threshold
+    idx_above = samples > THRESHOLD
+    idx_below = samples < THRESHOLD
     samples[idx_above] = 1
     samples[idx_below] = 0
 
@@ -112,6 +135,41 @@ def block_pulse_widths(samples):
     pulses = zip(offsets, widths)
 
     return pulses
+
+@timed("Finding dit/dah threshold...")
+def block_find_ditdah_threshold(samples):
+    global MORSE_DAH_MIN_LENGTH
+    global MORSE_DIT_MAX_LENGTH
+
+    widths = numpy.array([w for (_, w) in samples])
+
+    smin = numpy.min(widths)
+    smax = numpy.max(widths)
+    smean = numpy.mean(widths)
+    stdev = numpy.std(widths)
+
+    # Find two primary modes
+    kernel = scipy.stats.gaussian_kde(widths)
+    domain = numpy.linspace(smin, smax, 1000)
+    estimate = kernel(domain)
+    maxima, = scipy.signal.argrelmax(estimate)
+    max1, max2 = sorted(zip(estimate[maxima], domain[maxima]))[::-1][0:2]
+    smode1, smode2 = sorted((max1[1], max2[1]))
+
+    threshold = ((smode2 - smode1)/2.0) + smode1
+
+    print "    min %.2f  max %.2f  mean %.2f  stdev %.2f" % (smin, smax, smean, stdev)
+    print "    mode1 %.2f  mode2 %.2f  threshold %.2f" % (smode1, smode2, threshold)
+
+    MORSE_DAH_MIN_LENGTH = threshold
+    MORSE_DIT_MAX_LENGTH = threshold
+
+    #plt.plot(domain, kernel(domain))
+    #plt.hist(widths, bins=50)
+    #plt.axvline(threshold, color='r', linestyle='dashed')
+    #plt.show()
+
+    return samples
 
 @timed("Grouping pulse widths...")
 def block_group_pulse_widths(samples):
@@ -221,8 +279,10 @@ samples = block_find_center_frequency(samples)
 samples = block_bandpass_filter_iir(samples, MORSE_FREQUENCY - 10.0, MORSE_FREQUENCY + 10.0)
 samples = block_rectify(samples)
 samples = block_lowpass_filter_iir(samples, 50.0)
-samples = block_threshold(samples, MORSE_THRESHOLD)
+samples = block_find_threshold(samples)
+samples = block_threshold(samples)
 samples = block_pulse_widths(samples)
+samples = block_find_ditdah_threshold(samples)
 samples = block_group_pulse_widths(samples)
 samples = block_pulse_widths_to_symbols(samples)
 samples = block_morse_to_ascii(samples)
