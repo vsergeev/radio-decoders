@@ -1,16 +1,18 @@
 import sys
-import scipy.io.wavfile
-import scipy.signal
+import time
+import collections
 import numpy
 import numpy.fft
+import scipy.io.wavfile
+import scipy.signal
 import matplotlib.pyplot as plt
-import collections
 
 ################################################################################
 
 def plot_dft_samples(samples, sample_rate, title=""):
     samples_dft_mag = 20*numpy.log10(numpy.abs(numpy.fft.fft(samples)))
     samples_freqs = numpy.fft.fftfreq(len(samples_dft_mag), d=1.0/sample_rate)
+
     plt.plot(samples_freqs, samples_dft_mag)
     plt.xlim([-9000, 9000])
     plt.ylabel('Amplitude (Log)')
@@ -23,19 +25,34 @@ def plot_filter(b, a, sample_rate, freqs=None, title=""):
         w, h = scipy.signal.freqz(b, a)
     else:
         w, h = scipy.signal.freqz(b, a, (2*numpy.pi*numpy.array(freqs))/sample_rate)
+
     plt.plot((sample_rate * w)/(2*numpy.pi), 20*numpy.log10(abs(h)))
     plt.ylabel('Amplitude (dB)')
     plt.xlabel('Frequency (Hz)')
     plt.title(title)
     plt.show()
 
+def timed(message):
+    def wrap(f):
+        def wrapped_f(*args, **kwargs):
+            sys.stdout.write(message + "\n")
+            sys.stdout.flush()
+            tic = time.time()
+            rets = f(*args, **kwargs)
+            toc = time.time()
+            sys.stdout.write(" "*50 + "%.3f sec\n" % (toc-tic))
+            return rets
+        return wrapped_f
+    return wrap
+
 ################################################################################
 
-SAMPLE_RATE = 0.0
+SAMPLE_RATE = None
 
 ################################################################################
 
-def stream_wave_file(path, start=None, stop=None):
+@timed("Reading wave file...")
+def block_wave_file(path, start=None, stop=None):
     global SAMPLE_RATE
 
     (SAMPLE_RATE, samples) = scipy.io.wavfile.read(path, mmap=True)
@@ -47,68 +64,52 @@ def stream_wave_file(path, start=None, stop=None):
 
     return samples
 
-def stream_bandpass_filter_iir(stream, fLow, fHigh, margin=10.0):
+@timed("Bandpass filtering...")
+def block_bandpass_filter_iir(samples, fLow, fHigh):
     b,a = scipy.signal.butter(3, [(2*fLow)/(SAMPLE_RATE), (2*fHigh)/(SAMPLE_RATE)], btype='bandpass')
     #plot_filter(b, a, SAMPLE_RATE, range(1000))
-    return scipy.signal.lfilter(b, a, list(stream))
+    return scipy.signal.lfilter(b, a, samples)
 
-def stream_rectify(stream):
-    for sample in stream:
-        yield abs(sample)
+@timed("Rectifying...")
+def block_rectify(samples):
+    return numpy.abs(samples)
 
-def stream_lowpass_filter_iir(stream, fC):
+@timed("Low pass filtering...")
+def block_lowpass_filter_iir(samples, fC):
     b, a = scipy.signal.butter(4, (2*fC)/SAMPLE_RATE)
     #plot_filter(b, a, SAMPLE_RATE, range(1000))
-    return scipy.signal.lfilter(b, a, list(stream))
+    return scipy.signal.lfilter(b, a, samples)
 
-def stream_find_threshold(stream):
-    samples = list(stream)
+@timed("Thresholding...")
+def block_threshold(samples, threshold):
+    samples = numpy.copy(samples)
 
-    values, positions = numpy.histogram(samples, bins=100)
-    sorted_levels = sorted(zip(values, positions))[::-1]
-    pos1 = sorted_levels[0][1]
-    sorted_levels = filter(lambda w: abs(w[1] - pos1) > numpy.std(samples), sorted_levels)
-    pos2 = sorted_levels[0][1]
+    idx_above = samples > threshold
+    idx_below = samples < threshold
+    samples[idx_above] = 1
+    samples[idx_below] = 0
 
-    pos1, pos2 = min(pos1, pos2), max(pos1, pos2)
-    threshold = ((pos2 - pos1)/2.0) + pos1
-    print pos1, pos2, threshold
-
-    plt.hist(samples, bins=100)
-    plt.show()
     return samples
 
-def stream_threshold(stream, threshold):
-    for sample in stream:
-        if sample > threshold:
-            yield 1
-        else:
-            yield 0
+@timed("Converting samples to pulse widths...")
+def block_pulse_widths(samples):
+    widths = []
 
-def stream_pulse_widths(stream):
-    sample_number = 0
-    state, width = (0, 0)
-    for sample in stream:
-        sample_number += 1
-        # 0 0
-        if state == 0 and sample == 0:
-            state, width = (0, 0)
-        # 0 1
-        elif state == 0 and sample == 1:
-            offset = sample_number
-            state, width = (1, 1)
-        # 1 1
-        elif state == 1 and sample == 1:
-            state, width = (1, width+1)
-        # 1 0
-        elif state == 1 and sample == 0:
-            yield (offset/float(SAMPLE_RATE), width/float(SAMPLE_RATE))
-            state, width = (0, 0)
+    markers = numpy.diff(samples)
+    starts, = numpy.where(markers > 0)
+    stops, = numpy.where(markers < 0)
+    widths = (stops - starts)/float(SAMPLE_RATE)
+    offsets = (starts + 1)/float(SAMPLE_RATE)
 
-def stream_filter_pulse_widths(stream):
+    pulses = zip(offsets, widths)
+
+    return pulses
+
+@timed("Filtering pulse widths...")
+def block_filter_pulse_widths(samples):
     state = []
 
-    for (offset, width) in stream:
+    for (offset, width) in samples:
         if len(state) == 0:
             if width > 125e-3:
                 state = [(offset, width)]
@@ -123,15 +124,16 @@ def stream_filter_pulse_widths(stream):
             elif abs(offset - state[-1][0]) < 800e-3:
                 state.append((offset, width))
 
-    # Flush the last pulse collection when input stream is terminated
+    # Flush the last pulse collection when input samples is terminated
     if len(state) > 0:
         yield (state[0][0], sum([w for (_,w) in state]))
 
-def stream_pulse_widths_to_symbols(stream):
-    # approximately equal means actual vs. +/-25% of expected
+@timed("Converting pulse widths to symbols...")
+def block_pulse_widths_to_symbols(samples):
+    # approximately equal means actual is within +/- 25% of expected
     approx_equal = lambda actual, expected: abs(actual - expected) < 0.25*expected
 
-    for (offset, width) in stream:
+    for (offset, width) in samples:
         # 800ms for a marker
         if approx_equal(width, 800e-3):
             yield (offset, "M")
@@ -145,7 +147,8 @@ def stream_pulse_widths_to_symbols(stream):
         else:
             yield (offset, "I")
 
-def stream_symbols_to_frame(stream):
+@timed("Converting symbols to frame...")
+def block_symbols_to_frame(samples):
     template = [     0 , 'B', 'B', 'B', 'B', 'B', 'B',  0 , 'M',
                     'B', 'B', 'B', 'B',  0 , 'B', 'B', 'B',  0 , 'M',
                     'B', 'B', 'B', 'B',  0 , 'B', 'B',  0 ,  0 , 'M',
@@ -154,7 +157,7 @@ def stream_symbols_to_frame(stream):
                     'B', 'B', 'B', 'B', 'B', 'B', 'B', 'B', 'B', 'M'    ]
     state = [None]*59
 
-    for (offset, symbol) in stream:
+    for (offset, symbol) in samples:
         print (offset, symbol)
         state = state[1:] + [(offset, symbol)]
         if None not in state:
@@ -181,10 +184,10 @@ def stream_symbols_to_frame(stream):
             # Reset the state
             state = [None]*59
 
-def stream_frame_to_wwv_record(stream):
+def block_frame_to_wwv_record(samples):
     WWVRecord = collections.namedtuple('WWVRecord', ['DST1', 'LSW', 'Year', 'Minutes', 'Hours', 'Day_of_year', 'DUT1', 'DST2', 'UT1_Corr'])
 
-    for frame in stream:
+    for frame in samples:
         dst1 = bool(frame[1])
         lsw = bool(frame[2])
         year = 1*frame[3] + 2*frame[4] + 4*frame[5] + 8*frame[6] + 10*frame[50] + 20*frame[51] + 40*frame[52] + 80*frame[53]
@@ -197,17 +200,12 @@ def stream_frame_to_wwv_record(stream):
 
         yield WWVRecord(dst1, lsw, year, minutes, hours, day_of_year, dut1, dst2, ut1_corr)
 
-def stream_print_wwv_record(stream):
-    for record in stream:
+def block_print_wwv_record(samples):
+    for record in samples:
         print record
 
-def stream_plot(stream, n=None, title=""):
-    if n is None:
-        x = list(stream)
-    else:
-        x = [stream.next() for _ in range(n)]
-
-    plt.plot(x)
+def block_plot(samples, n=None, title=""):
+    plt.plot(samples[0:n])
     plt.ylabel('Value')
     plt.xlabel('Time (sample number)')
     plt.title(title)
@@ -216,23 +214,23 @@ def stream_plot(stream, n=None, title=""):
 ################################################################################
 
 if len(sys.argv) < 2:
-    print "Usage: %s <WWV recording wave file> [start] [stop]" % sys.argv[0]
+    print "Usage: %s <recorded WWV wave file> [start] [stop]" % sys.argv[0]
     sys.exit(1)
 elif len(sys.argv) == 2:
-    s0 = stream_wave_file(sys.argv[1])
+    samples = block_wave_file(sys.argv[1])
 elif len(sys.argv) == 3:
-    s0 = stream_wave_file(sys.argv[1], int(sys.argv[2]))
-elif len(sys.argv) == 4:
-    s0 = stream_wave_file(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]))
+    samples = block_wave_file(sys.argv[1], int(sys.argv[2]))
+elif len(sys.argv) >= 4:
+    samples = block_wave_file(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]))
 
-s1 = stream_bandpass_filter_iir(s0, 95.0, 105.0)
-s2 = stream_rectify(s1)
-s3 = stream_lowpass_filter_iir(s2, 5.0)
-s4 = stream_threshold(s3, 1500)
-s5 = stream_pulse_widths(s4)
-s6 = stream_filter_pulse_widths(s5)
-s7 = stream_pulse_widths_to_symbols(s6)
-s8  = stream_symbols_to_frame(s7)
-s9 = stream_frame_to_wwv_record(s8)
-stream_print_wwv_record(s9)
+samples = block_bandpass_filter_iir(samples, 95.0, 105.0)
+samples = block_rectify(samples)
+samples = block_lowpass_filter_iir(samples, 5.0)
+samples = block_threshold(samples, 1000.0)
+samples = block_pulse_widths(samples)
+samples = block_filter_pulse_widths(samples)
+samples = block_pulse_widths_to_symbols(samples)
+samples  = block_symbols_to_frame(samples)
+samples = block_frame_to_wwv_record(samples)
+block_print_wwv_record(samples)
 
