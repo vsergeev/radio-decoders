@@ -59,3 +59,45 @@ def stream_bandpass_filter_iir_slow(stream, fLow, fHigh, margin=10.0):
         yield y_n
 
 
+#    spectrogram = [numpy.copy(dft)]
+#    W = numpy.exp((2*numpy.pi*1j*numpy.arange(0, N/2+1))/N)
+#
+#    for n in range(N,len(samples)):
+#        # Marginally stable sliding DFT
+#        # X_k(n) = [X_k(n-1) - x(n-N) + x(n)]*e^(2*pi*k/N)
+#        dft = (dft - samples[n-N] + samples[n])*W
+#        spectrogram.append(dft)
+#
+#    spectrogram = numpy.array(spectrogram)
+#    spectrogram = numpy.abs(spectrogram.T)
+#
+#    plt.imshow(spectrogram, origin='lower', aspect='auto', interpolation='nearest')
+#    plt.show()
+
+
+    """
+    wf = numpy.hanning(N)
+    Wl = numpy.exp((-2*numpy.pi*1j*rtty_low_index*numpy.arange(N))/N)
+    Wh = numpy.exp((-2*numpy.pi*1j*rtty_high_index*numpy.arange(N))/N)
+
+    spectrogram = []
+    for n in range(len(samples) - N - (len(samples) % N)):
+        sample_window = numpy.array(samples[n:n+N])*wf
+        dft_low = numpy.sum(sample_window * Wl)
+        dft_high = numpy.sum(sample_window * Wh)
+        spectrogram.append((dft_low, dft_high))
+    """
+
+    """
+    dft = numpy.fft.rfft(samples, N)
+    dft = numpy.array([dft[rtty_low_index], dft[rtty_high_index]])
+    spectrogram = [numpy.copy(dft)]
+    W = numpy.exp((2*numpy.pi*1j*numpy.array([rtty_low_index, rtty_high_index]))/N)
+
+    for n in range(N,len(samples)):
+        # Marginally stable sliding DFT
+        # X_k(n) = [X_k(n-1) - x(n-N) + x(n)]*e^(2*pi*k/N)
+        dft = (dft - samples[n-N] + samples[n])*W
+        spectrogram.append(dft)
+    """
+
