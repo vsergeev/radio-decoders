@@ -39,6 +39,8 @@ SAMPLE_RATE = None
 RTTY_FREQUENCY = None
 RTTY_THRESHOLD = None
 
+RTTY_LOW_MARK = True
+
 ######################################################################
 
 @timed("Reading wave file...")
@@ -58,10 +60,10 @@ def block_wave_file(path, start=None, stop=None):
 def block_find_rtty_frequencies(samples):
     global RTTY_FREQUENCY
 
-    dft = numpy.abs(numpy.fft.rfft(samples))
+    magdft = numpy.abs(numpy.fft.rfft(samples))
 
     # Pick first strong frequency
-    sorted_freqs = ((SAMPLE_RATE/2.0)/len(dft))*(numpy.argsort(dft)[::-1])
+    sorted_freqs = ((SAMPLE_RATE/2.0)/len(magdft))*(numpy.argsort(magdft)[::-1])
     freq1 = sorted_freqs[0]
 
     # Pick next strong frequeny at least 15 Hz away
@@ -70,10 +72,10 @@ def block_find_rtty_frequencies(samples):
 
     RTTY_FREQUENCY = tuple(sorted([freq1, freq2]))
 
-    print "RTTY Frequency Pair: %.2f Hz / %.2f Hz" % RTTY_FREQUENCY
-    print "Frequency shift: %.2f Hz" % abs(RTTY_FREQUENCY[0] - RTTY_FREQUENCY[1])
+    print "    RTTY Frequency Pair: %.2f Hz / %.2f Hz" % RTTY_FREQUENCY
+    print "    Frequency shift: %.2f Hz" % abs(RTTY_FREQUENCY[0] - RTTY_FREQUENCY[1])
 
-    return samples 
+    return samples
 
 @timed("Reading wave file...")
 def block_wave_file(path, start=None, stop=None):
@@ -86,70 +88,60 @@ def block_wave_file(path, start=None, stop=None):
     elif start is not None and stop is not None:
         samples = samples[start*SAMPLE_RATE:stop*SAMPLE_RATE]
 
+    print "    sample rate %d" % SAMPLE_RATE
+
     return samples
 
-@timed("Bandpass filtering...")
-def block_bandpass_filter_iir(samples, fLow, fHigh):
-    b,a = scipy.signal.butter(5, [(2*fLow)/(SAMPLE_RATE), (2*fHigh)/(SAMPLE_RATE)], btype='bandpass')
-    #plot_filter(b, a, SAMPLE_RATE, range(1000))
-    return scipy.signal.lfilter(b, a, samples)
+@timed("Performing sliding DFT...")
+def block_sliding_dft(samples):
+    rtty_delta = RTTY_FREQUENCY[1] - RTTY_FREQUENCY[0]
+    N = int(SAMPLE_RATE/(rtty_delta/5.0))
+    rtty_low_index = int((RTTY_FREQUENCY[0]/(SAMPLE_RATE/2.0)) * N/2.0)
+    rtty_high_index = int((RTTY_FREQUENCY[1]/(SAMPLE_RATE/2.0)) * N/2.0)
 
-def block_zc_comparator(samples):
+    print "    N %d  low index %d  high index %d" % (N, rtty_low_index, rtty_high_index)
+
+    wf = numpy.hanning(N)
+
+    spectrogram = []
+    for n in range(len(samples) - N - (len(samples) % N)):
+        sample_window = numpy.array(samples[n:n+N])*wf
+        dft = numpy.fft.rfft(sample_window)
+        spectrogram.append((abs(dft[rtty_low_index]), abs(dft[rtty_high_index])))
+
+    #pspectrogram = numpy.abs(numpy.array(spectrogram).T)
+    #plt.imshow(pspectrogram, origin='lower', aspect='auto')
+    #plt.show()
+
+    return spectrogram
+
+@timed("Normalizing...")
+def block_normalize(samples):
+    samples = numpy.array(samples).T
+
+    #plt.plot(samples[0], label="low")
+    #plt.plot(samples[1], label="high")
+    #plt.legend()
+    #plt.show()
+
+    samples[0] = samples[0]*(numpy.mean(samples[1])/numpy.mean(samples[0]))
+    return zip(samples[0], samples[1])
+
+@timed("Thresholding...")
+def block_threshold(samples):
     nsamples = []
-    state = 0
-
     for sample in samples:
-        if state == 0 and sample > 0.0:
-            state = 1
-            nsamples.append(1.0)
-        elif state == 1 and sample < 0.0:
-            state = 0
-            nsamples.append(0.0)
-        elif state == 0 and sample < 0.0:
-            state = 0
-            nsamples.append(0.0)
-        elif state == 1 and sample > 0.0:
-            state = 1
-            nsamples.append(0.0)
+        nsamples.append(1*(sample[1] > sample[0]) ^ RTTY_LOW_MARK)
+
+    #plt.plot(nsamples)
+    #plt.show()
 
     return nsamples
 
-@timed("Low pass filtering...")
-def block_lowpass_filter_iir(samples, fC):
-    b, a = scipy.signal.butter(4, (2*fC)/SAMPLE_RATE)
-    #plot_filter(b, a, SAMPLE_RATE, range(1000))
-    return scipy.signal.lfilter(b, a, samples)
-
-@timed("Rectifying...")
-def block_rectify(samples):
-    return numpy.abs(samples)
-
-@timed("Finding threshold...")
-def block_find_threshold(samples):
-    global RTTY_THRESHOLD
-
-    smax = numpy.percentile(samples, 85)
-    smin = numpy.percentile(samples, 15)
-
-    RTTY_THRESHOLD = ((smax - smin)/2.0) + smin
-
-    return samples
-
-@timed("Thresholding...")
-def block_threshold(samples, threshold):
-    samples = numpy.copy(samples)
-
-    idx_above = samples > threshold
-    idx_below = samples < threshold
-    samples[idx_above] = 1
-    samples[idx_below] = 0
-
-    return samples
-
 def block_plot(samples, n=None, title=""):
-    plt.plot(samples[0:n])
+    plt.plot(numpy.arange(len(samples[0:n]))/float(SAMPLE_RATE), samples[0:n])
     plt.ylabel('Value')
-    plt.xlabel('Time (sample number)')
+    plt.xlabel('Time (seconds)')
     plt.title(title)
     plt.show()
 
@@ -157,7 +149,7 @@ def block_plot_dft(samples, title=""):
     samples_dft_mag = 20*numpy.log10(numpy.abs(numpy.fft.fft(samples)))
     samples_freqs = numpy.fft.fftfreq(len(samples_dft_mag), d=1.0/SAMPLE_RATE)
     plt.plot(samples_freqs, samples_dft_mag)
-    plt.xlim([-9000, 9000])
+    #plt.xlim([-9000, 9000])
     plt.ylabel('Amplitude (Log)')
     plt.xlabel('Frequency (Hz)')
     plt.title(title)
@@ -174,10 +166,8 @@ elif len(sys.argv) == 4:
     samples = block_wave_file(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]))
 
 samples = block_find_rtty_frequencies(samples)
-samples = block_bandpass_filter_iir(samples, RTTY_FREQUENCY[0] - 50.0, RTTY_FREQUENCY[1] + 50.0)
-samples = block_zc_comparator(samples)
-samples = block_lowpass_filter_iir(samples, 100.0)
-samples = block_find_threshold(samples)
-samples = block_threshold(samples, RTTY_THRESHOLD)
+samples = block_sliding_dft(samples)
+samples = block_normalize(samples)
+samples = block_threshold(samples)
 block_plot(samples)
 
