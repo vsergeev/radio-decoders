@@ -39,7 +39,7 @@ SAMPLE_RATE = None
 RTTY_FREQUENCY = None
 RTTY_THRESHOLD = None
 
-RTTY_LOW_MARK = True
+RTTY_LOW_MARK = False
 RTTY_BAUDRATE = 45.45
 RTTY_START_BITS = 1
 RTTY_DATA_BITS = 5
@@ -143,15 +143,77 @@ def block_threshold(samples):
 
     return nsamples
 
+@timed("Bandpass filtering...")
+def block_bandpass_filter_iir(samples, fLow, fHigh):
+    b,a = scipy.signal.butter(5, [(2*fLow)/(SAMPLE_RATE), (2*fHigh)/(SAMPLE_RATE)], btype='bandpass')
+    #plot_filter(b, a, SAMPLE_RATE, range(1000))
+    return scipy.signal.lfilter(b, a, samples)
+
+def block_zc_comparator(samples):
+    nsamples = []
+    state = 0
+
+    for sample in samples:
+        if state == 0 and sample > 0.0:
+            state = 1
+            nsamples.append(1.0)
+        elif state == 1 and sample < 0.0:
+            state = 0
+            nsamples.append(0.0)
+        elif state == 0 and sample < 0.0:
+            state = 0
+            nsamples.append(0.0)
+        elif state == 1 and sample > 0.0:
+            state = 1
+            nsamples.append(0.0)
+
+    return nsamples
+
+@timed("Low pass filtering...")
+def block_lowpass_filter_iir(samples, fC):
+    b, a = scipy.signal.butter(4, (2*fC)/SAMPLE_RATE)
+    #plot_filter(b, a, SAMPLE_RATE, range(1000))
+    return scipy.signal.lfilter(b, a, samples)
+
+@timed("Rectifying...")
+def block_rectify(samples):
+    return numpy.abs(samples)
+
+@timed("Finding threshold...")
+def block_find_threshold(samples):
+    global RTTY_THRESHOLD
+
+    smax = numpy.percentile(samples, 85)
+    smin = numpy.percentile(samples, 15)
+
+    RTTY_THRESHOLD = ((smax - smin)/2.0) + smin
+
+    #plt.plot(numpy.arange(len(samples))/float(SAMPLE_RATE), samples)
+    #plt.axhline(RTTY_THRESHOLD)
+    #plt.show()
+
+    return samples
+
+@timed("Thresholding...")
+def block_threshold2(samples, threshold):
+    samples = numpy.copy(samples)
+
+    idx_above = samples > threshold
+    idx_below = samples < threshold
+    samples[idx_above] = 1 ^ RTTY_LOW_MARK
+    samples[idx_below] = 0 ^ RTTY_LOW_MARK
+
+    return samples
+
 @timed("Decoding bits...")
 def block_decode(samples):
     bits_per_frame = RTTY_START_BITS + RTTY_DATA_BITS + RTTY_STOP_BITS
 
-    state_len = int(numpy.ceil(bits_per_frame*(SAMPLE_RATE/RTTY_BAUDRATE)))
-    state = [1]*state_len
-
-    oversample = 4
+    oversample = 2
     sample_offsets = (numpy.arange(1/(2*oversample*RTTY_BAUDRATE), bits_per_frame/RTTY_BAUDRATE, 1/(oversample*RTTY_BAUDRATE))*SAMPLE_RATE).astype(int)
+
+    sample_window_len = sample_offsets[-1]+1
+    sample_window = [1]*sample_window_len
 
     #bit_offsets = (numpy.arange(0, (bits_per_frame+1)/RTTY_BAUDRATE, 1/RTTY_BAUDRATE)*SAMPLE_RATE).astype(int)
     #x = numpy.arange(0, int(SAMPLE_RATE*(8/RTTY_BAUDRATE)))
@@ -163,14 +225,21 @@ def block_decode(samples):
     #plt.show()
 
     bit_consensus = lambda x: (numpy.all(x == 1) or numpy.all(x == 0))
+    #bit_consensus = lambda x: (len(x[x == 1]) > (3*oversample/4) or len(x[x == 0]) > (3*oversample/4))
+    #bit_majority = lambda x: (len(x[x == 1]) > len(x[x == 0]))*1
 
     nsamples = []
+    sample_number = 0
+    counter = 0
 
     for sample in samples:
-        state = state[1:] + [sample]
-        if state[0] == 1 and state[1] == 0:
+        sample_window = sample_window[1:] + [sample]
+        sample_number += 1
+        counter += 1
+
+        if sample_window[0] == 1 and sample_window[1] == 0:
             # Sample bits at sample offsets
-            bit_samples = numpy.array(state)[sample_offsets]
+            bit_samples = numpy.array(sample_window)[sample_offsets]
 
             # Isolate start, data, stop bit samples
             start_samples = bit_samples[0:oversample]
@@ -179,21 +248,25 @@ def block_decode(samples):
 
             # Verify bit consensus, start bit and stop bit values
             if not bit_consensus(start_samples) or start_samples[0] != 0:
+                print "Start bit failure"
                 continue
             if not bit_consensus(stop_samples) or stop_samples[0] != 1:
+                print "Stop bit failure"
                 continue
             if not numpy.all([bit_consensus(d) for d in data_samples]):
-                #print "Data consensus failure"
+                print "Data bits failure"
                 continue
 
-            #print "Found frame"
+            offset = sample_number - sample_window_len
+            print "%d: Found frame" % (offset)
 
             # Extract the data bits
-            data = [d[0] for d in data_samples]
+            data = [int(d[0]) for d in data_samples]
             nsamples.append(data)
 
-            # Reset the state
-            state = [1]*state_len
+            # Reset the sample window
+            sample_window = [1]*sample_window_len
+            counter = 0
 
     return nsamples
 
@@ -222,6 +295,10 @@ def block_bits_to_ita2(samples):
     state_shifted = False
 
     for sample in samples:
+        if sample is None:
+            yield "`"
+            continue
+
         if RTTY_LSB_FIRST:
             sample = sample[::-1]
 
@@ -265,11 +342,14 @@ elif len(sys.argv) == 3:
 elif len(sys.argv) == 4:
     samples = block_wave_file(sys.argv[1], int(sys.argv[2]), int(sys.argv[3]))
 
+######################################################################
+
 samples = block_find_rtty_frequencies(samples)
-samples = block_sliding_dft(samples)
-samples = block_normalize(samples)
-samples = block_threshold(samples)
-block_plot(samples)
+samples = block_bandpass_filter_iir(samples, RTTY_FREQUENCY[0] - 50.0, RTTY_FREQUENCY[1] + 50.0)
+samples = block_zc_comparator(samples)
+samples = block_lowpass_filter_iir(samples, 125.0)
+samples = block_find_threshold(samples)
+samples = block_threshold2(samples, RTTY_THRESHOLD)
 samples = block_decode(samples)
 samples = block_bits_to_ita2(samples)
 block_print_conversation(samples)
