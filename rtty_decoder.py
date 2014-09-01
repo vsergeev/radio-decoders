@@ -133,7 +133,7 @@ def block_normalize(samples):
     return zip(samples[0], samples[1])
 
 @timed("Thresholding...")
-def block_threshold(samples):
+def block_threshold_dft(samples):
     nsamples = []
     for sample in samples:
         nsamples.append(1*(sample[1] > sample[0]) ^ RTTY_LOW_MARK)
@@ -146,8 +146,19 @@ def block_threshold(samples):
 @timed("Bandpass filtering...")
 def block_bandpass_filter_iir(samples, fLow, fHigh):
     b,a = scipy.signal.butter(5, [(2*fLow)/(SAMPLE_RATE), (2*fHigh)/(SAMPLE_RATE)], btype='bandpass')
-    #plot_filter(b, a, SAMPLE_RATE, range(1000))
+    plot_filter(b, a, SAMPLE_RATE, range(1500))
     return scipy.signal.lfilter(b, a, samples)
+
+@timed("Bandpass filtering...")
+def block_bandpass_filter_fir(samples, fLow, fHigh):
+    b,a = scipy.signal.firwin(1024, [(2*fLow)/(SAMPLE_RATE), (2*fHigh)/(SAMPLE_RATE)], pass_zero=False), [1]
+    plot_filter(b, a, SAMPLE_RATE, range(1500))
+    return scipy.signal.lfilter(b, a, samples)
+
+@timed("Thresholding...")
+def block_threshold_bandpass(samples_low, samples_high):
+    samples = [(samples_low[i] < samples_high[i])*1 ^ RTTY_LOW_MARK for i in range(len(samples_low))]
+    return samples
 
 def block_zc_comparator(samples):
     nsamples = []
@@ -159,7 +170,7 @@ def block_zc_comparator(samples):
             nsamples.append(1.0)
         elif state == 1 and sample < 0.0:
             state = 0
-            nsamples.append(0.0)
+            nsamples.append(1.0)
         elif state == 0 and sample < 0.0:
             state = 0
             nsamples.append(0.0)
@@ -188,14 +199,14 @@ def block_find_threshold(samples):
 
     RTTY_THRESHOLD = ((smax - smin)/2.0) + smin
 
-    #plt.plot(numpy.arange(len(samples))/float(SAMPLE_RATE), samples)
-    #plt.axhline(RTTY_THRESHOLD)
-    #plt.show()
+    plt.plot(numpy.arange(len(samples))/float(SAMPLE_RATE), samples)
+    plt.axhline(RTTY_THRESHOLD)
+    plt.show()
 
     return samples
 
 @timed("Thresholding...")
-def block_threshold2(samples, threshold):
+def block_threshold_zerocross(samples, threshold):
     samples = numpy.copy(samples)
 
     idx_above = samples > threshold
@@ -344,12 +355,30 @@ elif len(sys.argv) == 4:
 
 ######################################################################
 
+method = "zc"
+
 samples = block_find_rtty_frequencies(samples)
-samples = block_bandpass_filter_iir(samples, RTTY_FREQUENCY[0] - 50.0, RTTY_FREQUENCY[1] + 50.0)
-samples = block_zc_comparator(samples)
-samples = block_lowpass_filter_iir(samples, 125.0)
-samples = block_find_threshold(samples)
-samples = block_threshold2(samples, RTTY_THRESHOLD)
+
+if method == "bandpass":
+    samples1 = block_bandpass_filter_fir(samples, RTTY_FREQUENCY[0]-5.0, RTTY_FREQUENCY[0]+5.0)
+    samples2 = block_bandpass_filter_fir(samples, RTTY_FREQUENCY[1]-5.0, RTTY_FREQUENCY[1]+5.0)
+    samples1 = block_rectify(samples1)
+    samples2 = block_rectify(samples2)
+    samples1 = block_lowpass_filter_iir(samples1, 100.0)
+    samples2 = block_lowpass_filter_iir(samples2, 100.0)
+    samples = block_threshold_bandpass(samples1, samples2)
+    block_plot(samples)
+elif method == "zc":
+    samples = block_bandpass_filter_iir(samples, RTTY_FREQUENCY[0]-50.0, RTTY_FREQUENCY[1]+50.0)
+    samples = block_zc_comparator(samples)
+    samples = block_lowpass_filter_iir(samples, 100.0)
+    samples = block_find_threshold(samples)
+    samples = block_threshold_zerocross(samples, RTTY_THRESHOLD)
+elif method == "dft":
+    samples = block_sliding_dft(samples)
+    samples = block_normalize(samples)
+    samples = block_threshold_dft(samples)
+
 samples = block_decode(samples)
 samples = block_bits_to_ita2(samples)
 block_print_conversation(samples)
