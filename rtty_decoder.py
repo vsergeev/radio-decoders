@@ -40,6 +40,11 @@ RTTY_FREQUENCY = None
 RTTY_THRESHOLD = None
 
 RTTY_LOW_MARK = True
+RTTY_BAUDRATE = 45.45
+RTTY_START_BITS = 1
+RTTY_DATA_BITS = 5
+RTTY_STOP_BITS = 1.5
+RTTY_LSB_FIRST = True
 
 ######################################################################
 
@@ -138,6 +143,101 @@ def block_threshold(samples):
 
     return nsamples
 
+@timed("Decoding bits...")
+def block_decode(samples):
+    bits_per_frame = RTTY_START_BITS + RTTY_DATA_BITS + RTTY_STOP_BITS
+
+    state_len = int(numpy.ceil(bits_per_frame*(SAMPLE_RATE/RTTY_BAUDRATE)))
+    state = [1]*state_len
+
+    oversample = 4
+    sample_offsets = (numpy.arange(1/(2*oversample*RTTY_BAUDRATE), bits_per_frame/RTTY_BAUDRATE, 1/(oversample*RTTY_BAUDRATE))*SAMPLE_RATE).astype(int)
+
+    #bit_offsets = (numpy.arange(0, (bits_per_frame+1)/RTTY_BAUDRATE, 1/RTTY_BAUDRATE)*SAMPLE_RATE).astype(int)
+    #x = numpy.arange(0, int(SAMPLE_RATE*(8/RTTY_BAUDRATE)))
+    #plt.plot(x, [0.0]*len(x))
+    #for z in sample_offsets:
+    #    plt.axvline(z, color='b')
+    #for z in bit_offsets:
+    #    plt.axvline(z, color='r')
+    #plt.show()
+
+    bit_consensus = lambda x: (numpy.all(x == 1) or numpy.all(x == 0))
+
+    nsamples = []
+
+    for sample in samples:
+        state = state[1:] + [sample]
+        if state[0] == 1 and state[1] == 0:
+            # Sample bits at sample offsets
+            bit_samples = numpy.array(state)[sample_offsets]
+
+            # Isolate start, data, stop bit samples
+            start_samples = bit_samples[0:oversample]
+            data_samples = [bit_samples[oversample*i:oversample*(i+1)] for i in range(1, 1+RTTY_DATA_BITS)]
+            stop_samples = bit_samples[(RTTY_START_BITS+RTTY_DATA_BITS)*oversample:]
+
+            # Verify bit consensus, start bit and stop bit values
+            if not bit_consensus(start_samples) or start_samples[0] != 0:
+                continue
+            if not bit_consensus(stop_samples) or stop_samples[0] != 1:
+                continue
+            if not numpy.all([bit_consensus(d) for d in data_samples]):
+                #print "Data consensus failure"
+                continue
+
+            #print "Found frame"
+
+            # Extract the data bits
+            data = [d[0] for d in data_samples]
+            nsamples.append(data)
+
+            # Reset the state
+            state = [1]*state_len
+
+    return nsamples
+
+@timed("Converting bits to characters...")
+def block_bits_to_ita2(samples):
+    ita2_table = {  False: { 0b00000: '[0]', 0b00100: ' ' , 0b10111: 'Q',
+                             0b10011: 'W', 0b00001: 'E', 0b01010: 'R',
+                             0b10000: 'T', 0b10101: 'Y', 0b00111: 'U',
+                             0b00110: 'I', 0b11000: 'O', 0b10110: 'P',
+                             0b00011: 'A', 0b00101: 'S', 0b01001: 'D',
+                             0b01101: 'F', 0b11010: 'G', 0b10100: 'H',
+                             0b01011: 'J', 0b01111: 'K', 0b10010: 'L',
+                             0b10001: 'Z', 0b11101: 'X', 0b01110: 'C',
+                             0b11110: 'V', 0b11001: 'B', 0b01100: 'N',
+                             0b11100: 'M', 0b01000: '\r', 0b00010: '\n', },
+                    True: {  0b00000: '[0]', 0b00100: ' ', 0b10111: '1',
+                             0b10011: '2', 0b00001: '3', 0b01010: '4',
+                             0b10000: '5', 0b10101: '6', 0b00111: '7',
+                             0b00110: '8', 0b11000: '9', 0b10110: '0',
+                             0b00011: '-', 0b00101: '[Bell]', 0b01001: '[WRU?]',
+                             0b01101: '!', 0b11010: '&', 0b10100: '#',
+                             0b01011: '\'', 0b01111: '(', 0b10010: ')',
+                             0b10001: '"', 0b11101: '/', 0b01110: ':',
+                             0b11110: ';', 0b11001: '?', 0b01100: ',',
+                             0b11100: '.', 0b01000: '\r', 0b00010: '\n', } }
+    state_shifted = False
+
+    for sample in samples:
+        if RTTY_LSB_FIRST:
+            sample = sample[::-1]
+
+        bits = (sample[0] << 4) | (sample[1] << 3) | (sample[2] << 2) | (sample[3] << 1) | (sample[4] << 0)
+        if bits == 0b11011:
+            state_shifted = True
+        elif bits == 0b11111:
+            state_shifted = False
+        else:
+            yield ita2_table[state_shifted][bits]
+
+@timed("Printing conversation...")
+def block_print_conversation(samples):
+    for sample in samples:
+        sys.stdout.write(sample)
+
 def block_plot(samples, n=None, title=""):
     plt.plot(numpy.arange(len(samples[0:n]))/float(SAMPLE_RATE), samples[0:n])
     plt.ylabel('Value')
@@ -170,4 +270,7 @@ samples = block_sliding_dft(samples)
 samples = block_normalize(samples)
 samples = block_threshold(samples)
 block_plot(samples)
+samples = block_decode(samples)
+samples = block_bits_to_ita2(samples)
+block_print_conversation(samples)
 
