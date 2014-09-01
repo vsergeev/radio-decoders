@@ -122,6 +122,8 @@ def block_pulse_widths(samples):
     markers = numpy.diff(samples)
     starts, = numpy.where(markers > 0)
     stops, = numpy.where(markers < 0)
+    length = min(len(starts), len(stops))
+    starts, stops = starts[0:length], stops[0:length]
     widths = (stops - starts)/float(SAMPLE_RATE)
     offsets = (starts + 1)/float(SAMPLE_RATE)
 

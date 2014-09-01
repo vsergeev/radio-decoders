@@ -131,6 +131,8 @@ def block_pulse_widths(samples):
     markers = numpy.diff(samples)
     starts, = numpy.where(markers > 0)
     stops, = numpy.where(markers < 0)
+    length = min(len(starts), len(stops))
+    starts, stops = starts[0:length], stops[0:length]
     widths = (stops - starts)/float(SAMPLE_RATE)
     offsets = (starts + 1)/float(SAMPLE_RATE)
 
@@ -167,8 +169,8 @@ def block_find_ditdah_threshold(samples):
     MORSE_DIT_MAX_LENGTH = threshold1
     MORSE_DAH_MIN_LENGTH = threshold2
 
-    #plt.plot(domain, kernel(domain))
     #plt.hist(widths, bins=50)
+    #plt.plot(domain, kernel(domain))
     #plt.axvline(threshold1, color='r', linestyle='dashed')
     #plt.axvline(threshold2, color='r', linestyle='dashed')
     #plt.show()
@@ -228,7 +230,7 @@ def block_morse_to_ascii(samples):
                         '0': '-----',  '1': '.----',  '2': '..---',
                         '3': '...--',  '4': '....-',  '5': '.....',
                         '6': '-....',  '7': '--...',  '8': '---..',
-                        '9': '----.',  '=': '-...-',   
+                        '9': '----.',  '=': '-...-',
                         '[BK]': '-...-.-',
                         '[SN]': '...-.',
                     }
@@ -259,12 +261,7 @@ def block_ascii_to_conversation(samples):
     sys.stdout.write("\n")
 
 def block_plot(samples, n=None, title=""):
-    if n is None:
-        x = list(samples)
-    else:
-        x = [samples.next() for _ in range(n)]
-
-    plt.plot(x)
+    plt.plot(samples[0:n])
     plt.ylabel('Value')
     plt.xlabel('Time (sample number)')
     plt.title(title)
